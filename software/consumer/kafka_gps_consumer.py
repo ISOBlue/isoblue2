@@ -36,7 +36,7 @@ if __name__ == "__main__":
     lat = []
     lon = []
 
-    for message in consumer: 
+    for message in consumer:
         key_splited = message.key.split(':')
         if key_splited[0] != 'gps':
             continue
@@ -53,13 +53,3 @@ if __name__ == "__main__":
 		client.publish('ib1/gps/tpv', payload=json.dumps(gps_datum['object']))
 		print gps_datum['object']
 		sleep(0.1)
-	
-'''	
-	if gps_datum['object_name'] == 'TPV':
-		gmap = gmplot.GoogleMapPlotter(40.427411, -86.912627, 17.5)
-		lat.append(gps_datum['object']['lat'])
-		lon.append(gps_datum['object']['lon'])
-		gmap.plot(lat, lon, 'cornflowerblue', edge_width=10)
-		gmap.draw("/var/www/html/mymap.html")
-		insertapikey("/var/www/html/mymap.html", 'AIzaSyB0Dh_TULLREO7cbTXweSffZVrXdY8E37I')
-'''
