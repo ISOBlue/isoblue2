@@ -1,12 +1,12 @@
 [Unit]
-Description=Heartbeat Report Service
+Description=GPS Logging service from gpsd service to sqlite database
 Documentation=http://www.isoblue.org/
-Requires=
+Requires=gpsd.service
 After=
 ConditionPathExists=/opt/bin
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c '/opt/bin/heartbeat'
+ExecStart=/bin/bash -c '/opt/bin/gps_log.py'
 Restart=on-failure
 RestartSec=2

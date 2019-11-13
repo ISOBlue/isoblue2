@@ -1,0 +1,15 @@
+[Unit]
+Description=Read from the SQLite databse and upload to the OADA server defined in /opt/isoblue.conf
+Documentation=http://www.isoblue.org/
+Requires=heartbeat.service rest_gps_log.service
+After=heartbeat.service
+ConditionPathExists=/opt/bin
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c '/opt/bin/oada_upload.py'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

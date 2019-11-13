@@ -9,7 +9,7 @@ After=network.target remote-fs.target can-log-rimp.service can-log-rtra.service
 Type=simple
 ExecStart=/opt/bin/get_pgns.sh
 Restart=always
-RestartSec=5
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target

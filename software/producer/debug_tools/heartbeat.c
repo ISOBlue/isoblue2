@@ -33,42 +33,79 @@
 #include <errno.h>
 
 #include <sys/time.h>
+#include <time.h>
+#include <sqlite3.h>
+#include "ini.c"
 
-#include <avro.h>
-#include <librdkafka/rdkafka.h>
-
-volatile char key[100];
-static char *brokers = "localhost:9092";
+/* misc shell commands for checking cell strength and setting led values */
 static char *ns_cmd = "qmicli -p -d /dev/cdc-wdm0 --nas-get-signal-strength | \
   head -n 3 | tail -n 1 | sed \"s/^.*'\\([-0-9]*\\) dBm'[^']*$/\\1/\"";
 static char *led4_cmd = "cat /sys/class/leds/LED_4_GREEN/brightness";
 static char *led5_cmd = "cat /sys/class/leds/LED_5_GREEN/brightness";
 
-const char D_HB_SCHEMA[] =
-"{\"type\":\"record\",\
-  \"name\":\"dhb\",\
-  \"fields\":[\
-  {\"name\": \"timestamp\", \"type\": \"double\"},\
-  {\"name\": \"cellns\", \"type\": \"int\"},\
-  {\"name\": \"wifins\", \"type\": \"int\"},\
-  {\"name\": \"netled\", \"type\": \"boolean\"},\
-  {\"name\": \"statled\", \"type\": \"boolean\"}]}";
+sqlite3 *db;
+char* id;
+
+/* Config file struct and callback */
+static char *configloc = "/opt/isoblue.cfg";
+
+/* Struct to contain config */
+typedef struct
+{
+  int hbinterval;
+  const char* dbpath;
+  const char* id;
+  const char* baseuri;
+  int debuglevel;
+} configuration;
+
+// Global config after it is read
+configuration config;
+
+/* Oarse configuration file */
+static int handler(void* user, const char* section, const char* name, const char* value){
+  configuration* pconfig = (configuration*)user;
+
+  #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
+  if (MATCH("ISOBlue", "hbinterval")) {
+    pconfig->hbinterval = atoi(value);
+  } else if (MATCH("ISOBlue", "dbpath")) {
+    pconfig->dbpath = strdup(value);
+  } else if (MATCH("ISOBlue", "id")) {
+    pconfig->id = strdup(value);
+  } else if (MATCH("REST", "baseuri")){
+    pconfig->baseuri = strdup(value);
+  } else if(MATCH("ISOBlue", "debuglevel")){
+    pconfig->debuglevel = atoi(value);
+  } else {
+    /* unknown section/name */
+    /* There are many options used by other programs, so ignore non-matches */
+    //return 0;
+  }
+  return 1;
+}
+
+/* Debug printing method */
+/* `lvl` specifies the desired debug printing level.
+ * If 'debuglvl' in the config file is the same or higher than lvl, then we will print (log) the statement */
+void dbgprintf(int lvl, const char *fmt, ...){
+  if(lvl <= config.debuglevel){
+    /* Build format string, use snprintf blank buffer trick */
+    int sizetoprint = snprintf(0, 0,"DEBUG %d: %s", lvl, fmt);
+    char * dbgfmt = malloc(sizeof(char) * sizetoprint + 1);
+    snprintf(dbgfmt, sizetoprint + 1,"DEBUG %d: %s", lvl, fmt);
+    
+    va_list argptr;
+    va_start(argptr, fmt);
+    vfprintf(stderr, dbgfmt, argptr);
+    va_end(argptr);
+    free(dbgfmt);
+  }
+}
+
 
 /* Timer handler */
 void timer_handler(int signum) {
-  /* Kafka static variables */
-  static rd_kafka_t *rk = NULL;
-  static rd_kafka_topic_t *rkt = NULL;
-  static rd_kafka_conf_t *conf = NULL;
-  static rd_kafka_topic_conf_t *topic_conf = NULL;
-  static char errstr[512];
-
-  /* Avro static variables */
-  static avro_writer_t writer = NULL;
-  static avro_schema_t d_hb_schema = NULL;
-  static avro_datum_t d_hb = NULL;
-  static char buf[100];
-
   /* timeval struct */
   struct timeval tp;
   double timestamp;
@@ -85,62 +122,6 @@ void timer_handler(int signum) {
   /* File pointer for running commands */
   FILE *fn;
 
-  /* Broker conf */
-  if (conf == NULL) {
-    conf = rd_kafka_conf_new();
-    /* Kafka conf */
-    rd_kafka_conf_set(conf, "batch.num.messages", "20000", errstr,
-      sizeof(errstr));
-    rd_kafka_conf_set(conf, "queue.buffering.max.messages", "1000000", errstr,
-      sizeof(errstr));
-    rd_kafka_conf_set(conf, "queue.buffering.max.ms", "1", errstr,
-      sizeof(errstr));
-    rd_kafka_conf_set(conf, "log.connection.close", "false", errstr,
-      sizeof(errstr));
-  }
-
-  /* Kafka topic conf */
-  if (topic_conf == NULL) {
-    topic_conf = rd_kafka_topic_conf_new();
-    rd_kafka_topic_conf_set(topic_conf, "request.required.acks", "0", errstr,
-      sizeof(errstr));
-  }
-
-  /* Create Kafka producer */
-  if (rk == NULL) {
-    if (!(rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr)))) {
-      fprintf(stderr, "%% Failed to create new producer: %s\n", errstr);
-    }
-  }
-
-  if (rd_kafka_brokers_add(rk, brokers) == 0) {
-    fprintf(stderr, "%% No valid brokers specified\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if (rkt == NULL) {
-    /* Create new Kafka topic */
-    rkt = rd_kafka_topic_new(rk, "debug", topic_conf);
-  }
-
-  /* Initialize the schema structure from JSON */
-  if (d_hb_schema == NULL) {
-    if (avro_schema_from_json_literal(D_HB_SCHEMA, &d_hb_schema)) {
-      fprintf(stderr, "Unable to parse d_hb schema\n");
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  /* Create avro writer */
-  if (writer == NULL) {
-    writer = avro_writer_memory(buf, sizeof(buf));
-  }
-
-  /* Create avro record based on the schema */
-  if (d_hb == NULL) {
-    d_hb = avro_record(d_hb_schema);
-  }
-
   /* Get UNIX timestamp */
   gettimeofday(&tp, NULL);
   timestamp = tp.tv_sec + tp.tv_usec / 1000000.0;
@@ -152,23 +133,19 @@ void timer_handler(int signum) {
     exit(EXIT_FAILURE);
   }
 
+  dbgprintf(2, "Network status check returned `%d`, (%d)\n",ret, WEXITSTATUS(ret));
+
   /* Change LED4 and 5 status based on Internet connectivity */
   if (WEXITSTATUS(ret) == 0) {
     /* Indicate online */
-    system("echo 0 > /sys/class/leds/LED_4_RED/brightness");
-    system("echo 255 > /sys/class/leds/LED_4_GREEN/brightness");
-#if DEBUG
-    printf("%f: alive\n", timestamp);
-    fflush(stdout);
-#endif
+    system("echo 0 > /sys/class/leds/LED_5_RED/brightness");
+    system("echo 255 > /sys/class/leds/LED_5_GREEN/brightness");
+    dbgprintf(1, "%f: alive\n", timestamp);
   } else {
     /* Indicate offline */
-    system("echo 0 > /sys/class/leds/LED_4_GREEN/brightness");
-    system("echo 255 > /sys/class/leds/LED_4_RED/brightness");
-#if DEBUG
-    printf("%f: dead\n", timestamp);
-    fflush(stdout);
-#endif
+    system("echo 0 > /sys/class/leds/LED_5_GREEN/brightness");
+    system("echo 255 > /sys/class/leds/LED_5_RED/brightness");
+    dbgprintf(1, "%f: dead\n", timestamp);
   }
 
   /* Get the network strength from command */
@@ -186,11 +163,10 @@ void timer_handler(int signum) {
     exit(EXIT_FAILURE);
   }
 
-  printf("%f: cell network strength is %d\n", timestamp, cell_ns);
-  fflush(stdout);
+  dbgprintf(1, "%f: cell network strength is %d\n", timestamp, cell_ns);
 
   if (cell_ns < -100) {
-    printf("%f: Network strength %d dBm doesn't make sense! Something WRONG!\n",
+    dbgprintf(0, "%f: Network strength %d dBm doesn't make sense! Something WRONG!\n",
       timestamp, cell_ns);
   }
 
@@ -199,13 +175,13 @@ void timer_handler(int signum) {
   if (fn != NULL) {
     fflush(stdout);
     fscanf(fn, "%d", &ledval);
-    printf("led4val: %d\n", ledval);
+    dbgprintf(1, "led4val: %d\n", ledval);
     if (ledval == 255) {
-      netled = true;
+      statled = true;
     } else {
-      netled = false;
+      statled = false;
     }
-    printf("netled: %d\n", netled);
+    dbgprintf(1, "statled: %d\n", statled);
   } else {
     perror("popen");
     exit(EXIT_FAILURE);
@@ -220,108 +196,180 @@ void timer_handler(int signum) {
   fn = popen(led5_cmd, "r");
   if (fn != NULL) {
     fscanf(fn, "%d", &ledval);
-    printf("led5val: %d\n", ledval);
+    dbgprintf(1, "led5val: %d\n", ledval);
     if (ledval == 255) {
-      statled = true;
+      netled = true;
     } else {
-      statled = false;
+      netled = false;
     }
-    printf("statled: %d\n", statled);
+    dbgprintf(1, "netled: %d\n", netled);
   } else {
     perror("popen");
     exit(EXIT_FAILURE);
   }
+
+  dbgprintf(1, "Closing subprocess\n");
+
   /* Close the subprocess */
   if (pclose(fn) < 0) {
     perror("pclose");
     exit(EXIT_FAILURE);
   }
 
-  /* Construct avro data pieces */
-  avro_datum_t ts_datum = avro_double(timestamp);
-  avro_datum_t cell_ns_datum = avro_int32(cell_ns);
-  avro_datum_t wifi_ns_datum = avro_int32(wifi_ns);
-  avro_datum_t netled_datum = avro_boolean(netled);
-  avro_datum_t statled_datum = avro_boolean(statled);
+  /* Create JSON String to store in db*/
+  
+  dbgprintf(2, "LED Status light setting successful\n");
 
-  if (avro_record_set(d_hb, "timestamp", ts_datum)
-    || avro_record_set(d_hb, "cellns", cell_ns_datum)
-    || avro_record_set(d_hb, "wifins", wifi_ns_datum)
-    || avro_record_set(d_hb, "netled", netled_datum)
-    || avro_record_set(d_hb, "statled", statled_datum)) {
-    fprintf(stderr, "Unable to set record to d_hb\n");
-    exit(EXIT_FAILURE);
+  dbgprintf(2, "Quering database for backlog\n");
+
+  /* Query size of backlog to report in hearbeat */
+  char * sql = "SELECT COUNT(sent) from sendqueue where sent == 0";
+  char * zErrMsg = 0;
+  /* Avoid exec function to avoid having to use a callback, which would get messy */
+  sqlite3_stmt * stmt;
+  sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+  int rc = sqlite3_step(stmt);
+  int unsentrows = -1;
+  if( rc == SQLITE_ROW){
+    unsentrows = sqlite3_column_int(stmt, 0);
+    dbgprintf(1, "Number of rows unsent: %d\n", unsentrows);
+  }else{
+    dbgprintf(1, "Could not query sql backlog\n");
+    dbgprintf(1, "SQL Error: %d\n", rc);
+  }
+  sqlite3_finalize(stmt);
+
+  dbgprintf(2, "Creating SQL String\n");
+  /*Get day and time indicies for use when building URI*/
+  time_t now;
+  time(&now);
+  struct tm *utctime = gmtime(&now);
+  int hour = utctime->tm_hour;
+  int year = utctime->tm_year + 1900;
+  int month = utctime->tm_mon + 1;
+  int day = utctime->tm_mday;
+
+  /* snprint returns the number of bytes it could not write. We can leverage this to find the size
+   * of a string needed by giving it a null buffer to write to */
+  sql = 0;
+  int sizetoprint = snprintf(0, 0, "INSERT INTO sendqueue(time, topic, data, sent) " \
+    "VALUES (%d, \"%s/%s/heartbeat/day-index/%d-%02d-%02d/hour-index/%02d\", \'\"%.0f\":{\"timestamp\":%f,\"cell_ns\":%d,\"wifi_ns\":%d,\"backlog\":%d,\"netled\":%d,\"statled\":%d}\', 0)",\
+    (int)timestamp, config.baseuri, config.id, year, month, day, hour, timestamp, timestamp, cell_ns, wifi_ns, unsentrows, netled, statled);
+
+  dbgprintf(2, "Query string will be %d bytes long\n", sizetoprint);
+  
+  /* Plus 1 to include '\0' */
+  sql = (char *) malloc(sizeof(char) * sizetoprint + 1);
+
+  dbgprintf(2, "Query Malloc successful\n");
+
+  /* Create actual sql string now that we have allocated the proper amount of memory */
+  snprintf(sql, sizetoprint + 1, "INSERT INTO sendqueue(time, topic, data, sent) " \
+    "VALUES (%d, \"%s/%s/heartbeat/day-index/%d-%02d-%02d/hour-index/%02d\", \'\"%.0f\":{\"timestamp\":%f,\"cell_ns\":%d,\"wifi_ns\":%d,\"backlog\":%d,\"netled\":%d,\"statled\":%d}\', 0)",\
+    (int)timestamp, config.baseuri, config.id, year, month, day, hour, timestamp, timestamp, cell_ns, wifi_ns, unsentrows, netled, statled);
+
+
+  dbgprintf(1, "SQL String: `%s`\n\tSQL string build successful, executing query\n",sql);
+  dbgprintf(2, "Netled: %d | statled: %d\n", netled, statled);
+
+  zErrMsg = 0;
+  rc = 0;
+  /* Ececute SQL string built above */
+  rc = sqlite3_exec(db, sql, NULL, NULL, &zErrMsg);
+
+  /* If DB is locked or busy, try 8 more times, every 100ms. If it is still busy, give up and move on 
+   * Otherwise, report the error and move on */
+  if( rc != SQLITE_OK ){
+    if( rc == SQLITE_BUSY ) {
+	int retries = 8;
+    	dbgprintf(1, "SQL Error: %d \"%s\", retrying db write %d more times\n", rc, zErrMsg, retries);
+	int i = 0;
+	while( rc != SQLITE_OK && i < retries ){
+          usleep(100);
+	  zErrMsg = 0;
+          rc = sqlite3_exec(db, sql, NULL, NULL, &zErrMsg);
+	  dbgprintf(1, "SQL retry #%d return value: %d \"%s\"\n", i + 1, rc, zErrMsg);
+	  i++;
+	}
+	if( rc != SQLITE_OK ){
+	  dbgprintf(1, "After %d tries, could not insert hb data in db. Skipping\n", i + 1);
+	}
+    }else if (rc == SQLITE_LOCKED ){
+	int retries = 8;
+    	dbgprintf(1, "SQL Error: %d \"%s\", retrying db write %d more times\n", rc, zErrMsg, retries);
+	int i = 0;
+	while( rc != SQLITE_OK && i < retries ){
+	  usleep(100);
+          zErrMsg = 0;
+          rc = sqlite3_exec(db, sql, NULL, NULL, &zErrMsg);
+	  dbgprintf(1, "SQL retry #%d return value: %d \"%s\"\n", i + 1, rc, zErrMsg);
+	  i++;
+	}
+	if( rc != SQLITE_OK ){
+	  dbgprintf(1, "After %d tries, could not insert hb data in db. Skipping\n", i + 1);
+	}
+    }else {
+	 fprintf(stderr, "SQL error: %d \"%s\"\n", zErrMsg);
+    }
+    sqlite3_free(zErrMsg);
+  }else{
+    dbgprintf(1, "SQL Query execution successful\n");
   }
 
-  if (avro_write_data(writer, d_hb_schema, d_hb)) {
-    fprintf(stderr, "unable to write d_hb datum to memory\n");
-    exit(EXIT_FAILURE);
-  }
+  free(sql); /* This could be optimized to use the same buffer over and over instead of reallocating it */
 
-//  printf("the key is: %s\n", key);
-
-  if (rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY,
-      buf, avro_writer_tell(writer), key, strlen(key), NULL) == -1) {
-    fprintf(stderr, "%% Failed to produce to topic %s "
-            "partition %i: %s\n",
-            rd_kafka_topic_name(rkt), RD_KAFKA_PARTITION_UA,
-            rd_kafka_err2str(rd_kafka_last_error()));
-    rd_kafka_poll(rk, 0);
-  }
-
-  rd_kafka_poll(rk, 0);
-
-  /* Decrement all our references to prevent memory from leaking */
-  avro_datum_decref(ts_datum);
-  avro_datum_decref(cell_ns_datum);
-  avro_datum_decref(wifi_ns_datum);
-  avro_datum_decref(netled_datum);
-  avro_datum_decref(statled_datum);
-
-  /* Reset the writer */
-  avro_writer_reset(writer);
 }
 
 int main(int argc, char *argv[]) {
-  if (argv[1] == NULL) {
-    fprintf(stderr, "You need to supply ISOBlue ID file\n");
+
+
+  /* Load and print config file */
+  if (ini_parse(configloc, handler, &config) < 0) {
+    printf("Can't load config file %s'\n", configloc);
     return EXIT_FAILURE;
   }
+  dbgprintf(1, "DEBUG mode enabled\n");
 
-  /* fp for opening uuid file */
-  FILE *fp;
-  char *id = 0;
-  long length;
+  dbgprintf(1, "Config file parsing results:\n");
+  dbgprintf(1, "hbinterval: %d\n", config.hbinterval);
+  dbgprintf(1, "dbpath: %s\n", config.dbpath);
+  dbgprintf(1, "id: %s\n", config.id);
+  dbgprintf(1, "baseuri: %s\n", config.baseuri);
+  dbgprintf(1, "debuglevel: %d\n", config.debuglevel);
 
   /* Timer stuff variables */
   struct sigaction sa;
   struct itimerval timer;
 
-  /* Get the id */
-  fp = fopen(argv[1], "r");
-  if (fp) {
-    fseek(fp, 0, SEEK_END);
-    length = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    id = malloc(length);
-    if (id) {
-      fread(id, 1, length, fp);
-      if (id[length - 1] == '\n') {
-        id[--length] = '\0';
-      }
-    }
-    fclose(fp);
-  } else {
-    perror("ISOBlue ID file");
+
+  /* Open/Create SQLite DB and table if needed */
+  int rc = sqlite3_open(config.dbpath, &db);
+
+  if( rc ){
+    dbgprintf(1, "Cannot open sqldb: %s\n", sqlite3_errmsg(db));
+    /* TODO: contine operating LEDs without writing to the DB in a 'Limp mode'? */
     return EXIT_FAILURE;
   }
 
-  /* Create the key */
-  strcpy(key, "hb");
-  strcat(key, ":");
-  strcat(key, id);
+  /* Create SQL statement */
+  char * sql = "CREATE TABLE IF NOT EXISTS sendqueue("  \
+    "id INTEGER PRIMARY KEY,"  \
+    "time               INTEGER,"  \
+    "topic              TEXT,"  \
+    "data               TEXT,"  \
+    "sent               INTEGER);" \
+    "PRAGMA journal_mode=WAL";
+  
+  /* Execute SQL statement */
+  char* zErrMsg = 0;
+  rc = sqlite3_exec(db, sql, NULL, NULL, &zErrMsg);
+  
+  if( rc != SQLITE_OK ){
+    fprintf(stderr, "SQL error: %s\n", zErrMsg);
+    sqlite3_free(zErrMsg);
+    return EXIT_FAILURE;
+  }
 
-  printf("the key is: %s\n", key);
 
   /* Install timer_handler as the signal handler for SIGALRM. */
   memset(&sa, 0, sizeof(sa));
@@ -332,7 +380,7 @@ int main(int argc, char *argv[]) {
   timer.it_value.tv_sec = 5;
   timer.it_value.tv_usec = 0;
   /* ... and every 10 secs after that. */
-  timer.it_interval.tv_sec = 60;
+  timer.it_interval.tv_sec = config.hbinterval;
   timer.it_interval.tv_usec = 0;
 
   /* Start a real timer. It counts down whenever this process is
@@ -344,6 +392,5 @@ int main(int argc, char *argv[]) {
   while (1) {
     sleep(1);
   }
-
   return EXIT_SUCCESS;
 }
