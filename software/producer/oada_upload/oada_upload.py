@@ -101,13 +101,14 @@ if __name__ == "__main__":
     # Create open file objects for fds for communication with oada-cache
     printdebug(2, 'cache read fd: ', cacheread, ' Write fd: ', cachewrite)
     printdebug(2, 'rest read fd: ', restread, ' Writefd: ', restwrite)
-    restreadobj = os.fdopen(restread, 'r')
+    #restreadobj = os.fdopen(restread, 'r')
     restwriteobj = os.fdopen(restwrite, 'w')
 
     # Except Ctrl-C for graceful shutdown
     try:
         while 1:
             # Update config from config file
+            printdebug(2, 'Updating config file')
             if readconfig(config, configdict) == -1:
                 printdebug(1, 'Could not read config file for updates')
 
@@ -117,21 +118,33 @@ if __name__ == "__main__":
             uploadindicies = {}
 
             # Grab N rows, N being maximum batch size
-            for row in db.cursor().execute('SELECT * FROM sendqueue WHERE sent IS NOT 1 ORDER BY time DESC LIMIT ?', (str(configdict['batchsize']),)):
-                
+            printdebug(2, 'Querying unsent messages, limiting to ', configdict['batchsize'])
+            unsent = db.cursor().execute('SELECT * FROM sendqueue WHERE sent IS NOT 1 ORDER BY time DESC LIMIT ?', (str(configdict['batchsize']),))
+            printdebug(2, 'Batching requests')
+            for row in unsent:
+                dbindex = str(row[0])
+                uri = str(row[2])
+                data = str(row[3])
+
                 # If we have already seen the uri added it to that bucket
-                if uploaddata.has_key(str(row[2])):
-                    uploaddata[str(row[2])] = uploaddata[str(row[2])] + ',' + str(row[3])
-                    uploadindicies[str(row[2])].append(str(row[0]))
+                if uploaddata.has_key(uri):
+                    uploaddata[uri] = uploaddata[uri] + ',' + data
+                    uploadindicies[uri].append(dbindex)
 
                 # If we have not seen this uri, create another bucket
                 else:
-                    uploaddata[str(row[2])] = str(row[3])
-                    uploadindicies[str(row[2])] = [str(row[0])]
+                    uploaddata[uri] = data
+                    uploadindicies[uri] = [dbindex]
                 
-                
+             
+            if len(uploaddata) == 0:
+                printdebug(1, 'Nothing to send. Sleeping for 1s and then rechecking')
+                time.sleep(1)
+                continue
+   
             # Check for internet. If not exists, wait 5 seconds and try again
             # If there is still no connection, refresh batch to send and try again
+            printdebug(2, 'Checking internet connection')
             if not internet():
                 printdebug(2, 'Internet connection not detected. Sleeping 5s and trying again')
                 time.sleep(5)
@@ -172,17 +185,18 @@ if __name__ == "__main__":
 
                 # Read Resonse from OADA cache
                 #result = restreadobj.readline()
-                result = os.read(restread, 7)
+                result = os.read(restread, 8)
                 
                 # If send was successful, mark all indicies as sent and move on
                 if 'Success' == ' '.join(result.split()):
-                    printdebug(1, 'Send successful with response:: `', repr(result),'`')
+                    printdebug(1, 'Send successful with response: `', repr(result),'`')
                     printdebug(1, 'Updating ', len(uploadindicies[uri]), ' indicies as successfully sent')
                     # Mark all sent indicies as sent
                     for index in uploadindicies[uri]:
                         db.cursor().execute('UPDATE sendqueue SET sent = 1 where id = ?', (index,) )
                     db.commit()
                     errorcount = 0
+                    printdebug(2, 'Update finished')
                 else:
                     # If failed, skip and try again alter. If error count starts to grow, restart cache
                     printdebug(1, 'Send failed. Cache response: `', result+ '`')
@@ -202,8 +216,10 @@ if __name__ == "__main__":
                         printdebug(0, 'OADA Cache is still not behaving. Exiting so systemd can restart service')
                         exit(1)
 
-            # If we are trying to slow down the sends, sleep for the specified amount of time
-            time.sleep(configdict['senddelay'])
+            if configdict['senddelay'] > 0:
+                # If we are trying to slow down the sends, sleep for the specified amount of time
+                printdebug(2, "Sleeping for ", configdict['senddelay'], "s before the next send per config file")
+                time.sleep(configdict['senddelay'])
  
 
     except KeyboardInterrupt:
