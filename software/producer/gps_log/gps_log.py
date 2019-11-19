@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
+import sys
 import json
 import ConfigParser as configparser
 
@@ -13,38 +15,52 @@ from datetime import datetime
 
 cfgpath = '/opt/isoblue.cfg'
 
-# Global config variable
-isoblue_id = ''
-dbpath = ''
-baseuri = ''
+debuglevel = 100
 
-def readconfig( config_parser ):
+# Custom debug level. Set a debug level when calling which will be compared to the system
+#   debug level when determining to print or not
+def printdebug(lvl=2, *args, **kwargs):
+    if lvl <= debuglevel:
+        print('DEBUG ' + str(lvl) + ': ', *args, file=sys.stderr, **kwargs)
+
+
+def readconfig( config_parser, configdict ):
     
     # Read config file
     filesread = config.read(cfgpath)
 
     # Verify config read correctyly
     if filesread[0] != cfgpath:
-        print('Could not read config file')
+        printdebug(1, 'Could not read config file')
         exit(-1)
 
     # Read in relevant config options
-    isoblue_id = config.get('ISOBlue', 'id')
-    dbpath = config.get('ISOBlue', 'dbpath')
-    baseuri = config.get('REST', 'baseuri') + '/' + isoblue_id + '/GPS/day-index'
-
+    configdict['debuglevel'] = config.get('ISOBlue', 'debuglevel')
+    configdict['isoblue_id'] = config.get('ISOBlue', 'id')
+    configdict['dbpath'] = config.get('ISOBlue', 'dbpath')
+    configdict['baseuri'] = config.get('REST', 'baseuri') + '/' + configdict['isoblue_id'] + '/GPS/day-index'
+    
+    printdebug(2, 'Config file read success:')
+    printdebug(2, '\tDebug Level: ', configdict['debuglevel'])
+    printdebug(2, '\tISOBlue ID: ', configdict['isoblue_id'])
+    printdebug(2, '\tdbpath: ', configdict['dbpath'])
+    printdebug(2, '\tbaseuri: ', configdict['baseuri'])
 
 
 if __name__ == "__main__":
+
+    printdebug(2, 'Starting up')
 
     # Setup config parser
     config = configparser.RawConfigParser()
 
     # Read config file
-    readconfig( config )
+    configdict = {}
+    readconfig( config , configdict )
+    debuglevel = configdict['debuglevel']
 
     # Connect to database
-    db = sqlite3.connect(dbpath)
+    db = sqlite3.connect(configdict['dbpath'])
     # Create table if it does not alread exist
     db.cursor().execute('CREATE TABLE IF NOT EXISTS sendqueue(id INTEGER PRIMARY KEY, time INTEGER, topic TEXT, data TEXT, sent INTEGER)')
     db.cursor().execute('PRAGMA journal_mode=WAL')
@@ -61,7 +77,7 @@ if __name__ == "__main__":
     last_tpv_timestamp = None
 
     # Reparse the config file for any changes every n iterations
-    updateconfigcountdown = 100
+    updateconfigcountdown = 1000
 
     # Catch Ctrl-C to gracefully shutdown
     try:
@@ -113,9 +129,11 @@ if __name__ == "__main__":
 
                 
                 if data is not None:
-
                     # Create URI for uploading to OADA server
-                    uri = baseuri + '/' + datetime.now().isoformat()[:10] + '/hour-index/' + str(time.localtime(time.time()).tm_hour)
+                    uri = configdict['baseuri'] + '/' + datetime.now().isoformat()[:10] + '/hour-index/' + str(time.localtime(time.time()).tm_hour)
+
+
+                    printdebug(2, 'Attempting to insert ', (int(time.time()), uri, data, 0), ' into database')
 
                     # Publish the following data to the db:
                     # Time: Current UNIX time
@@ -130,7 +148,7 @@ if __name__ == "__main__":
             updateconfigcountdown = updateconfigcountdown - 1
             # if counter reaches 0, update the config and reset the counter
             if updateconfigcountdown <= 0:
-                readconfig( config )
+                readconfig( config, configdict )
                 updateconfigcountdown = 100
 
             time.sleep(0.1)
@@ -138,6 +156,7 @@ if __name__ == "__main__":
 
 
     except KeyboardInterrupt:
+        printdebug(2, 'Ctrl-C caught, exiting')
         # Close connection to db
         db.close()
         s.close()

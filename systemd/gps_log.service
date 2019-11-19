@@ -1,5 +1,5 @@
 [Unit]
-Description=GPS Logging service from gpsd service to sqlite database
+Description=GPS Logger
 Documentation=http://www.isoblue.org/
 Requires=gpsd.service
 After=

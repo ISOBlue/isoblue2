@@ -9,6 +9,7 @@ import json
 import subprocess
 import socket
 import os
+import select
 
 cfgpath = '/opt/isoblue.cfg'
 debuglevel = 0
@@ -185,6 +186,19 @@ if __name__ == "__main__":
 
                 # Read Resonse from OADA cache
                 #result = restreadobj.readline()
+                # wait for fd to contain data
+                readytoread = select.select([restread], [], [], 10.0)
+                
+                printdebug(2, 'Response from select.select: ', readytoread)
+
+                if readytoread == ([], [], []):
+                    # read timed out and cache is stuck. Restart the cache
+                    printdebug(1, 'Cache is stuck. Restarting')
+                    cache.kill()
+                    time.sleep(1)
+                    cache = bootcache(configdict, 10, cacheread, cachewrite)
+                    continue
+
                 result = os.read(restread, 8)
                 
                 # If send was successful, mark all indicies as sent and move on
@@ -199,7 +213,7 @@ if __name__ == "__main__":
                     printdebug(2, 'Update finished')
                 else:
                     # If failed, skip and try again alter. If error count starts to grow, restart cache
-                    printdebug(1, 'Send failed. Cache response: `', result+ '`')
+                    printdebug(1, 'Send failed. Cache response: `', result, '`')
                     errorcount = errorcount + 1
 
                     if errorcount >= 10:

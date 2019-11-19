@@ -1,8 +1,7 @@
 [Unit]
-Description=Read from the SQLite databse and upload to the OADA server defined in /opt/isoblue.conf
+Description=OADA Upload
 Documentation=http://www.isoblue.org/
-Requires=heartbeat.service rest_gps_log.service
-After=heartbeat.service
+After=heartbeat.service gps_log.service
 ConditionPathExists=/opt/bin
 
 [Service]

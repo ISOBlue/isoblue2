@@ -1,5 +1,5 @@
 [Unit]
-Description=Heartbeat Report Service
+Description=Heartbeat Report
 Documentation=http://www.isoblue.org/
 Requires=
 After=
