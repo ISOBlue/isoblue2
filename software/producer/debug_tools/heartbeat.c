@@ -309,7 +309,7 @@ void timer_handler(int signum) {
 	  dbgprintf(1, "After %d tries, could not insert hb data in db. Skipping\n", i + 1);
 	}
     }else {
-	 fprintf(stderr, "SQL error: %d \"%s\"\n", zErrMsg);
+	 dbgprintf(1, "SQL error: %d \"%s\"\n", rc, zErrMsg);
     }
     sqlite3_free(zErrMsg);
   }else{
