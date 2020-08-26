@@ -7,8 +7,8 @@ After=gpsd.service gps-log@remote.service gps-log@gps.service
 [Service]
 Type=simple
 ExecStart=/opt/bin/gps_log_watchdog.sh
-Restart=always
-RestartSec=2
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 [Unit]
 Description=Apache Kafka Broker Service
 Documentation=http://kafka.apache.org/documentation.html
-Requires=zookeeper.service can-log-limp.service can-log-ltra.service can-log-rimp.service can-log-rtra.service can-d-mr-imp.service can-d-mr-tra.service heartbeat.service
+Requires=zookeeper.service can-log-limp.service can-log-ltra.service can-d-mr-imp.service can-d-mr-tra.service gps-log@gps
 Before=shutdown.target sleep.target
 After=network.target dev-sda1.device zookeeper.service
 ConditionPathExists=/opt/kafka

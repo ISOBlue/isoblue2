@@ -1,0 +1,8 @@
+auto eth0
+iface eth0 inet static
+  pre-up iptables-restore < /etc/iptables.rules
+  up touch /opt/eth0-up
+  down rm /opt/eth0-up
+  post-down iptables-save > /etc/iptables.rules
+address 192.168.0.51
+netmask 255.255.255.0

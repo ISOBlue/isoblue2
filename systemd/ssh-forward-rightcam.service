@@ -1,0 +1,10 @@
+[Unit]
+Description=Port foward RTSP streams from rightcam to vip4.ecn.purdue.edu
+
+[Service]
+ExecStart=/usr/bin/ssh -nNT -o "ServerAliveInterval 10" -o "ServerAliveCountMax 3" -o "ExitOnForwardFailure yes" -R *:6554:rightcam:554 isoblue2@vip4.ecn.purdue.edu
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

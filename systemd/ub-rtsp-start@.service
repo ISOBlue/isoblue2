@@ -1,0 +1,11 @@
+[Unit]
+Description=RTSP streaming for Ubiquiti IP camera named %I
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ffmpeg -rtsp_transport tcp -i rtsp://%i:554/s0 -c copy -f segment -strftime 1 -segment_time 3600 /media/sdb1/s_%i/out_%Y-%%m-%d_%%H-%M-%S.avi
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Port foward RTSP streams from leftcam to vip4.ecn.purdue.edu
+
+[Service]
+ExecStart=/usr/bin/ssh -NR *:5554:leftcam:554 isoblue2@vip4.ecn.purdue.edu
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
